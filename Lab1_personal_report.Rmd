@@ -3,8 +3,9 @@ title: "Lab1-Personal report"
 author: "Arash"
 date: "2023-09-05"
 output:
-  pdf_document: default
+  word_document: default
   html_document: default
+  pdf_document: default
 ---
 
 ```{r setup, include=FALSE}
@@ -326,3 +327,210 @@ $$
 Based on this knowledge, we should expect to get the same result.
 
 However, in Question 4 we can see that the dependencies are much simpler (naive), therefore, the accuracy of the inference is lower than all the previous inferences.
+
+
+## Appendix
+
+```{r, eval = FALSE}
+library(bnlearn)
+library(gRain)
+library(purrr)
+
+data("asia")
+
+# 1
+
+hc_network <- hc(asia)
+plot(hc_network)
+
+
+hc_network_1 <- hc(asia, score = "bde", restart = 100)
+hc_network_2 <- hc(asia, score = "bde", restart = 1)
+all.equal(hc_network_1, hc_network_2)
+graphviz.compare(hc_network_1, hc_network_2, main = c("The BN with restart = 100", 
+                                                      "The BN with restart = 1"))
+
+
+
+hc_network_3 <- hc(asia, score = "bde", restart = 13)
+hc_network_4 <- hc(asia, score = "aic", restart = 13)
+all.equal(hc_network_3, hc_network_4)
+graphviz.compare(hc_network_3, hc_network_4, main = c("The BN with score = BDeu", 
+                                                      "The BN with restart = AIC"))
+
+
+hc_network_5 <- hc(asia, score = "bde", restart = 13, perturb = 3)
+hc_network_6 <- hc(asia, score = "bde", restart = 13, perturb = 7)
+all.equal(hc_network_5, hc_network_6)
+score(hc_network_5, asia, type = "bde")
+score(hc_network_6, asia, type = "bde")
+graphviz.compare(hc_network_5, hc_network_6, main = c("The BN with perturb = 3", 
+                                                      "The BN with perturb = 7"))
+
+
+# different imaginary sample size for BDeu algorithm
+hc_network_7 <- hc(asia, score = "bde", restart = 13, iss = 2)
+hc_network_8 <- hc(asia, score = "bde", restart = 13, iss = 7)
+all.equal(hc_network_7, hc_network_8)
+score(hc_network_7, asia, type = "bde")
+score(hc_network_8, asia, type = "bde")
+
+
+
+graphviz.compare(hc_network_7, hc_network_8, main = c("The BN with iss = 2", 
+                                                      "The BN with iss = 7"))
+
+# 2
+
+set.seed(7)
+
+training_idx <- sample(5000, nrow(asia) * 0.8)
+asia_training <- asia[training_idx, ]
+asia_test <- asia[-training_idx, ]
+
+
+bn_dag <- hc(asia_training, score = "bde", iss = 2, restart = 13)
+plot(bn_dag)
+
+param_tables <- bn.fit(bn_dag, asia_training, method = "mle")
+
+
+## Aprrox inference
+target_node_index <- 2
+evidence_vector <-
+  map_chr(
+    list_transpose(as.list(asia_test)),
+    ~ paste(
+      "(",
+      names(asia_test)[-target_node_index],
+      " == '",
+      map_chr(.x[-target_node_index], as.character),
+      "')",
+      sep = "",
+      collapse = " & "
+    )
+  )
+evnet <- "(S == 'yes')"
+
+cmds <- paste("cpquery(param_tables, ", evnet, ", ",  evidence_vector, ")", sep = "")
+probs <- map_dbl( cmds, ~eval(parse(text = .x)) )
+
+y_hats <- ifelse(probs > 0.5, "yes", "no")
+
+table(y_hats, asia_test$S)
+sum( diag(table(y_hats, asia_test$S)) ) / nrow(asia_test)
+
+
+
+## The Exact Inference
+
+asia_test_evidence <- asia_test[, -target_node_index]
+
+bn_grain <- param_tables %>% as.grain() %>% compile()
+
+bn_grain_evidences <- map_dbl(1:nrow(asia_test_evidence),
+                          ~ setEvidence(bn_grain,
+                                        nodes = names(asia_test_evidence),
+                                        states = as.matrix(asia_test_evidence)[.x, ]) %>%
+                            querygrain(nodes = "S") %>% pluck(1, "yes")) 
+
+y_hats <- ifelse(bn_grain_evidences > 0.5, "yes", "no")
+
+table(y_hats, asia_test$S)
+sum( diag(table(y_hats, asia_test$S)) ) / nrow(asia_test)
+
+
+
+## The exact inference with true graph
+
+dag <- model2network("[A][S][T|A][L|S][B|S][D|B:E][E|T:L][X|E]")
+plot(dag)
+param_tables_true_dag <- bn.fit(dag, asia_training, method = "mle")
+
+
+asia_test_evidence <- asia_test[, -target_node_index]
+
+bn_true_grain <- param_tables_true_dag %>% as.grain() %>% compile()
+
+bn_grain_evidences <- map_dbl(1:nrow(asia_test_evidence),
+                          ~ setEvidence(bn_true_grain,
+                                        nodes = names(asia_test_evidence),
+                                        states = as.matrix(asia_test_evidence)[.x, ]) %>%
+                            querygrain(nodes = "S") %>% pluck(1, "yes")) 
+
+y_hats <- ifelse(bn_grain_evidences > 0.5, "yes", "no")
+
+table(y_hats, asia_test$S)
+sum( diag(table(y_hats, asia_test$S)) ) / nrow(asia_test)
+
+
+# 3
+
+set.seed(7)
+
+training_idx <- sample(5000, nrow(asia) * 0.8)
+asia_training <- asia[training_idx, ]
+asia_test <- asia[-training_idx, ]
+
+bn_dag <- hc(asia_training, score = "bde", iss = 2, restart = 13)
+plot(bn_dag)
+
+
+mb_s <- mb(bn_dag, "S")
+
+
+param_tables <- bn.fit(bn_dag, asia_training, method = "mle")
+
+
+asia_test_evidence <- asia_test[, mb_s]
+
+bn_grain <- param_tables %>% as.grain() %>% compile()
+
+bn_grain_evidences <- map_dbl(1:nrow(asia_test_evidence),
+                          ~ setEvidence(bn_grain,
+                                        nodes = names(asia_test_evidence),
+                                        states = as.matrix(asia_test_evidence)[.x, ]) %>%
+                            querygrain(nodes = "S") %>% pluck(1, "yes")) 
+
+y_hats <- ifelse(bn_grain_evidences > 0.5, "yes", "no")
+
+table(y_hats, asia_test$S)
+
+
+# 4
+
+target_node_index <- 2
+
+naive_bn <- empty.graph(names(asia))
+
+naive_arcs <- cbind("S", c(names(asia)[-target_node_index]))
+
+arcs(naive_bn) <- naive_arcs
+plot(naive_bn)
+
+
+set.seed(7)
+
+training_idx <- sample(5000, nrow(asia) * 0.8)
+asia_training <- asia[training_idx, ]
+asia_test <- asia[-training_idx, ]
+
+param_tables_naive <- bn.fit(naive_bn, asia_training, method = "mle")
+
+
+asia_evidence <- asia_test[, -target_node_index]
+
+bn_naive_grain <- param_tables_naive %>% as.grain() %>% compile()
+
+bn_grain_evidences <- map_dbl(1:nrow(asia_evidence),
+                          ~ setEvidence(bn_naive_grain,
+                                        nodes = names(asia_evidence),
+                                        states = as.matrix(asia_evidence)[.x, ]) %>%
+                            querygrain(nodes = "S") %>% pluck(1, "yes")) 
+
+y_hats <- ifelse(bn_grain_evidences > 0.5, "yes", "no")
+
+table(y_hats, asia_test$S)
+
+```
+
